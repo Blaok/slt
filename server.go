@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+    "encoding/base64"
 	"flag"
 	"fmt"
 	"github.com/go-yaml/yaml"
@@ -29,6 +30,7 @@ type Options struct {
 
 type Backend struct {
 	Addr           string `"yaml:addr"`
+    Signature string `"yaml:signature"`
 	ConnectTimeout int    `yaml:connect_timeout"`
 }
 
@@ -160,9 +162,25 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
     var upConn net.Conn
     var backendAddr string
     if strings.HasPrefix(backend.Addr, "tls://") {
+        var tlsConn *tls.Conn
         config := &tls.Config{InsecureSkipVerify: true}
         backendAddr = backend.Addr[len("tls://"):]
-        upConn, err = tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond}, "tcp", backendAddr, config)
+        tlsConn, err = tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond}, "tcp", backendAddr, config)
+        tlsState := tlsConn.ConnectionState()
+        cert := tlsState.PeerCertificates[0]
+        signature := base64.StdEncoding.EncodeToString(cert.Signature)
+        if backend.Signature != "" {
+            if backend.Signature != signature {
+                s.Printf("Mismatching signature: upstream retures `%s`, expected `%s`", signature, backend.Signature)
+                upConn.Close()
+                c.Close()
+            } else {
+                s.Printf("Upstream signature matches expection")
+            }
+        } else {
+            s.Printf("Upstream signature: `%s`", signature)
+        }
+        upConn = tlsConn
     } else {
         if strings.HasPrefix(backend.Addr, "tcp://") {
             backendAddr = backend.Addr[len("tcp://"):]
