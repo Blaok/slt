@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -156,9 +157,22 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
 	backend := front.strategy.NextBackend()
 
 	// dial the backend
-	upConn, err := net.DialTimeout("tcp", backend.Addr, time.Duration(backend.ConnectTimeout)*time.Millisecond)
+    var upConn net.Conn
+    var backendAddr string
+    if strings.HasPrefix(backend.Addr, "tls://") {
+        config := &tls.Config{InsecureSkipVerify: true}
+        backendAddr = backend.Addr[len("tls://"):]
+        upConn, err = tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond}, "tcp", backendAddr, config)
+    } else {
+        if strings.HasPrefix(backend.Addr, "tcp://") {
+            backendAddr = backend.Addr[len("tcp://"):]
+        } else {
+            backendAddr = backend.Addr
+        }
+	    upConn, err = net.DialTimeout("tcp", backendAddr, time.Duration(backend.ConnectTimeout)*time.Millisecond)
+    }
 	if err != nil {
-		s.Printf("Failed to dial backend connection %v: %v", backend.Addr, err)
+		s.Printf("Failed to dial backend connection %v: %v", backendAddr, err)
 		c.Close()
 		return
 	}
