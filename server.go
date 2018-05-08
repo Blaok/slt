@@ -172,8 +172,9 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
         if backend.Signature != "" {
             if backend.Signature != signature {
                 s.Printf("Mismatching signature: upstream retures `%s`, expected `%s`", signature, backend.Signature)
-                upConn.Close()
+                tlsConn.Close()
                 c.Close()
+                return
             } else {
                 s.Printf("Upstream signature matches expection")
             }
