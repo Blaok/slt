@@ -166,22 +166,28 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
         config := &tls.Config{InsecureSkipVerify: true}
         backendAddr = backend.Addr[len("tls://"):]
         tlsConn, err = tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond}, "tcp", backendAddr, config)
-        tlsState := tlsConn.ConnectionState()
-        cert := tlsState.PeerCertificates[0]
-        signature := base64.StdEncoding.EncodeToString(cert.Signature)
-        if backend.Signature != "" {
-            if backend.Signature != signature {
-                s.Printf("Mismatching signature: upstream retures `%s`, expected `%s`", signature, backend.Signature)
-                tlsConn.Close()
-                c.Close()
-                return
+        if tlsConn != nil {
+            tlsState := tlsConn.ConnectionState()
+            cert := tlsState.PeerCertificates[0]
+            signature := base64.StdEncoding.EncodeToString(cert.Signature)
+            if backend.Signature != "" {
+                if backend.Signature != signature {
+                    s.Printf("Mismatching signature: upstream retures `%s`, expected `%s`", signature, backend.Signature)
+                    tlsConn.Close()
+                    c.Close()
+                    return
+                } else {
+                    s.Printf("Upstream signature matches expection")
+                }
             } else {
-                s.Printf("Upstream signature matches expection")
+                s.Printf("Upstream signature: `%s`", signature)
             }
+            upConn = tlsConn
         } else {
-            s.Printf("Upstream signature: `%s`", signature)
+            s.Printf("Failed to dial tls backend connection %v: %v", backendAddr, err)
+            c.Close()
+            return
         }
-        upConn = tlsConn
     } else {
         if strings.HasPrefix(backend.Addr, "tcp://") {
             backendAddr = backend.Addr[len("tcp://"):]
