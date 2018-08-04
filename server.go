@@ -214,8 +214,11 @@ func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
 		defer wg.Done()
 		defer dst.Close()
 		defer src.Close()
-		n, err := io.Copy(dst, src)
-		s.Printf("Copy from %v to %v failed after %d bytes with error %v", src.RemoteAddr(), dst.RemoteAddr(), n, err)
+    n, err := io.Copy(dst, src)
+    if err != nil {
+      s.Printf("Copy from %v to %v failed after %d bytes with error %v",
+               src.RemoteAddr(), dst.RemoteAddr(), n, err)
+    }
 	}
 
 	s.Printf("Joining connections: %v %v", c1.RemoteAddr(), c2.RemoteAddr())
