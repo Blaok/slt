@@ -230,18 +230,18 @@ func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
       if opError, ok := err.(*net.OpError); ok {
         if opError.Op == "read" || opError.Op == "readfrom" {
           if opError.Op == "readfrom" {
+            // client closed connection
             opError = opError.Err.(*net.OpError)
-          }
-          c1.Close()
-          c2.Close()
-          s.Printf("connection closed: %v <-> %v",
-                   c1.RemoteAddr(), c2.RemoteAddr())
+          } // else case is server closed connection
+          dst.Close()
+          s.Printf("connection %v -> %v closed due to %v",
+                   src.RemoteAddr(), dst.RemoteAddr(), err)
           gracefulExit = true
         }
       }
       if ! gracefulExit {
-      s.Printf("copy from %v to %v failed after %d bytes with error %v",
-           src.RemoteAddr(), dst.RemoteAddr(), n, err)
+        s.Printf("copy from %v to %v failed after %d bytes with error %v",
+                 src.RemoteAddr(), dst.RemoteAddr(), n, err)
       }
     }
   }
