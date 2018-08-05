@@ -1,219 +1,229 @@
 package main
 
 import (
-	"crypto/tls"
-    "encoding/base64"
-	"flag"
-	"fmt"
-	"github.com/go-yaml/yaml"
-	vhost "github.com/inconshreveable/go-vhost"
-	"io"
-	"io/ioutil"
-	"log"
-	"net"
-	"os"
-	"strings"
-	"sync"
-	"time"
+  "crypto/tls"
+  "encoding/base64"
+  "flag"
+  "fmt"
+  "github.com/go-yaml/yaml"
+  vhost "github.com/inconshreveable/go-vhost"
+  "io"
+  "io/ioutil"
+  "log"
+  "net"
+  "os"
+  "strings"
+  "sync"
+  "time"
 )
 
 const (
-	muxTimeout            = 10 * time.Second
-	defaultConnectTimeout = 10000 // milliseconds
+  muxTimeout            = 10 * time.Second
+  defaultConnectTimeout = 10000 // milliseconds
 )
 
 type loadTLSConfigFn func(crtPath, keyPath string) (*tls.Config, error)
 
 type Options struct {
-	configPath string
+  configPath string
 }
 
 type Backend struct {
   Addr            string `"yaml:addr"`
   Signature       string `"yaml:signature"`
-	ConnectTimeout  int    `yaml:connect_timeout"`
+  ConnectTimeout  int  `yaml:connect_timeout"`
 }
 
 type Frontend struct {
-	Backends []Backend `yaml:"backends"`
-	Strategy string    `yaml:"strategy"`
-	TLSCrt   string    `yaml:"tls_crt"`
-	mux      *vhost.TLSMuxer
-	TLSKey   string `yaml:"tls_key"`
-	Default  bool   `yaml:"default"`
+  Backends  []Backend       `yaml:"backends"`
+  Strategy  string          `yaml:"strategy"`
+  TLSCrt    string          `yaml:"tls_crt"`
+  mux       *vhost.TLSMuxer
+  TLSKey    string          `yaml:"tls_key"`
+  Default   bool            `yaml:"default"`
 
-	strategy  BackendStrategy `yaml:"-"`
-	tlsConfig *tls.Config     `yaml:"-"`
+  strategy  BackendStrategy `yaml:"-"`
+  tlsConfig *tls.Config     `yaml:"-"`
 }
 
 type Configuration struct {
-	BindAddr        string               `yaml:"bind_addr"`
-	Frontends       map[string]*Frontend `yaml:"frontends"`
-	defaultFrontend *Frontend
+  BindAddr        string                `yaml:"bind_addr"`
+  Frontends       map[string]*Frontend  `yaml:"frontends"`
+  defaultFrontend *Frontend
 }
 
 type Server struct {
-	*log.Logger
-	*Configuration
-	wait sync.WaitGroup
+  *log.Logger
+  *Configuration
+  wait sync.WaitGroup
 
-	// these are for easier testing
-	mux   *vhost.TLSMuxer
-	ready chan int
+  // these are for easier testing
+  mux   *vhost.TLSMuxer
+  ready chan int
 }
 
 func (s *Server) Run() error {
-	// bind a port to handle TLS connections
-	l, err := net.Listen("tcp", s.Configuration.BindAddr)
-	if err != nil {
-		return err
-	}
-	s.Printf("serving connections on %v", l.Addr())
+  // bind a port to handle TLS connections
+  l, err := net.Listen("tcp", s.Configuration.BindAddr)
+  if err != nil {
+    return err
+  }
+  s.Printf("serving connections on %v", l.Addr())
 
-	// start muxing on it
-	s.mux, err = vhost.NewTLSMuxer(l, muxTimeout)
-	if err != nil {
-		return err
-	}
+  // start muxing on it
+  s.mux, err = vhost.NewTLSMuxer(l, muxTimeout)
+  if err != nil {
+    return err
+  }
 
-	// wait for all frontends to finish
-	s.wait.Add(len(s.Frontends))
+  // wait for all frontends to finish
+  s.wait.Add(len(s.Frontends))
 
-	// setup muxing for each frontend
-	for name, front := range s.Frontends {
-		fl, err := s.mux.Listen(name)
-		if err != nil {
-			return err
-		}
-		go s.runFrontend(name, front, fl)
-	}
+  // setup muxing for each frontend
+  for name, front := range s.Frontends {
+    fl, err := s.mux.Listen(name)
+    if err != nil {
+      return err
+    }
+    go s.runFrontend(name, front, fl)
+  }
 
-	// custom error handler so we can log errors
-	go func() {
-		for {
-			conn, err := s.mux.NextError()
+  // custom error handler so we can log errors
+  go func() {
+    for {
+      conn, err := s.mux.NextError()
 
-			if conn == nil {
-				s.Printf("failed to mux next connection, error: %v", err)
-				if _, ok := err.(vhost.Closed); ok {
-					return
-				} else {
-					continue
-				}
-			} else {
-				if _, ok := err.(vhost.NotFound); ok && s.defaultFrontend != nil {
-					go s.proxyConnection(conn, s.defaultFrontend)
-				} else {
-					s.Printf("failed to mux connection from %v, error: %v", conn.RemoteAddr(), err)
-					// XXX: respond with valid TLS close messages
-					conn.Close()
-				}
-			}
-		}
-	}()
+      if conn == nil {
+        s.Printf("failed to mux next connection, error: %v", err)
+        if _, ok := err.(vhost.Closed); ok {
+          return
+        } else {
+          continue
+        }
+      } else {
+        if _, ok := err.(vhost.NotFound); ok && s.defaultFrontend != nil {
+          go s.proxyConnection(conn, s.defaultFrontend)
+        } else {
+          s.Printf("failed to mux connection from %v, error: %v",
+                   conn.RemoteAddr(), err)
+          // XXX: respond with valid TLS close messages
+          conn.Close()
+        }
+      }
+    }
+  }()
 
-	// we're ready, signal it for testing
-	if s.ready != nil {
-		close(s.ready)
-	}
+  // we're ready, signal it for testing
+  if s.ready != nil {
+    close(s.ready)
+  }
 
-	s.wait.Wait()
+  s.wait.Wait()
 
-	return nil
+  return nil
 }
 
 func (s *Server) runFrontend(name string, front *Frontend, l net.Listener) {
-	// mark finished when done so Run() can return
-	defer s.wait.Done()
+  // mark finished when done so Run() can return
+  defer s.wait.Done()
 
-	// always round-robin strategy for now
-	front.strategy = &RoundRobinStrategy{backends: front.Backends}
+  // always round-robin strategy for now
+  front.strategy = &RoundRobinStrategy{backends: front.Backends}
 
-	s.Printf("handling connections to %v", name)
-	for {
-		// accept next connection to this frontend
-		conn, err := l.Accept()
-		if err != nil {
-			s.Printf("failed to accept new connection for '%v': %v", conn.RemoteAddr())
-			if e, ok := err.(net.Error); ok {
-				if e.Temporary() {
-					continue
-				}
-			}
-			return
-		}
+  s.Printf("handling connections to %v", name)
+  for {
+    // accept next connection to this frontend
+    conn, err := l.Accept()
+    if err != nil {
+      s.Printf("failed to accept new connection for '%v': %v",
+               conn.RemoteAddr())
+      if e, ok := err.(net.Error); ok {
+        if e.Temporary() {
+          continue
+        }
+      }
+      return
+    }
     s.Printf("frontend connection: %v <- %v", name, conn.RemoteAddr())
 
-		// proxy the connection to an backend
-		go s.proxyConnection(conn, front)
-	}
+    // proxy the connection to an backend
+    go s.proxyConnection(conn, front)
+  }
 }
 
 func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
-	// unwrap if tls cert/key was specified
-	if front.tlsConfig != nil {
-		c = tls.Server(c, front.tlsConfig)
-	}
+  // unwrap if tls cert/key was specified
+  if front.tlsConfig != nil {
+    c = tls.Server(c, front.tlsConfig)
+  }
 
-	// pick the backend
-	backend := front.strategy.NextBackend()
+  // pick the backend
+  backend := front.strategy.NextBackend()
 
-	// dial the backend
-    var upConn net.Conn
-    var backendAddr string
-    if strings.HasPrefix(backend.Addr, "tls://") {
-        var tlsConn *tls.Conn
-        config := &tls.Config{InsecureSkipVerify: true}
-        backendAddr = backend.Addr[len("tls://"):]
-        tlsConn, err = tls.DialWithDialer(&net.Dialer{Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond}, "tcp", backendAddr, config)
-        if tlsConn != nil {
-            tlsState := tlsConn.ConnectionState()
-            cert := tlsState.PeerCertificates[0]
-            signature := base64.StdEncoding.EncodeToString(cert.Signature)
-            if backend.Signature != "" {
-                if backend.Signature != signature {
-                    s.Printf("mismatching signature: upstream retures `%s`, expected `%s`", signature, backend.Signature)
-                    tlsConn.Close()
-                    c.Close()
-                    return
-                } else {
-                    s.Printf("upstream signature matches expection")
-                }
-            } else {
-                s.Printf("upstream signature: `%s`", signature)
-            }
-            upConn = tlsConn
+  // dial the backend
+  var upConn net.Conn
+  var backendAddr string
+  if strings.HasPrefix(backend.Addr, "tls://") {
+    var tlsConn *tls.Conn
+    config := &tls.Config{InsecureSkipVerify: true}
+    backendAddr = backend.Addr[len("tls://"):]
+    tlsConn, err = tls.DialWithDialer(
+      &net.Dialer {
+        Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond
+      }, "tcp", backendAddr, config)
+    if tlsConn != nil {
+      tlsState := tlsConn.ConnectionState()
+      cert := tlsState.PeerCertificates[0]
+      signature := base64.StdEncoding.EncodeToString(cert.Signature)
+      if backend.Signature != "" {
+        if backend.Signature != signature {
+          s.Errorf(
+            "mismatching signature: upstream retures `%s`, expected `%s`",
+            signature, backend.Signature)
+          tlsConn.Close()
+          c.Close()
+          return
         } else {
-            s.Printf("failed to dial tls backend connection %v: %v", backendAddr, err)
-            c.Close()
-            return
+          s.Printf("upstream signature matches expection")
         }
+      } else {
+        s.Printf("upstream signature: `%s`", signature)
+      }
+      upConn = tlsConn
     } else {
-        if strings.HasPrefix(backend.Addr, "tcp://") {
-            backendAddr = backend.Addr[len("tcp://"):]
-        } else {
-            backendAddr = backend.Addr
-        }
-	    upConn, err = net.DialTimeout("tcp", backendAddr, time.Duration(backend.ConnectTimeout)*time.Millisecond)
+      s.Printf("failed to dial tls backend connection %v: %v", backendAddr, err)
+      c.Close()
+      return
     }
-	if err != nil {
-		s.Printf("failed to dial backend connection %v: %v", backendAddr, err)
-		c.Close()
-		return
-	}
-	s.Printf("backend connection: %v -> %v", upConn.LocalAddr(), upConn.RemoteAddr())
+  } else {
+    if strings.HasPrefix(backend.Addr, "tcp://") {
+      backendAddr = backend.Addr[len("tcp://"):]
+    } else {
+      backendAddr = backend.Addr
+    }
+    upConn, err = net.DialTimeout(
+      "tcp", backendAddr,
+      time.Duration(backend.ConnectTimeout)*time.Millisecond)
+  }
+  if err != nil {
+    s.Printf("failed to dial backend connection %v: %v", backendAddr, err)
+    c.Close()
+    return
+  }
+  s.Printf("backend connection: %v -> %v",
+           upConn.LocalAddr(), upConn.RemoteAddr())
 
-	// join the connections
-	s.joinConnections(c, upConn)
-	return
+  // join the connections
+  s.joinConnections(c, upConn)
+  return
 }
 
 func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
-	var wg sync.WaitGroup
-	halfJoin := func(dst net.Conn, src net.Conn) {
-		defer wg.Done()
-		defer dst.Close()
-		defer src.Close()
+  var wg sync.WaitGroup
+  halfJoin := func(dst net.Conn, src net.Conn) {
+    defer wg.Done()
+    defer dst.Close()
+    defer src.Close()
     n, err := io.Copy(dst, src)
     if err != nil {
       gracefulExit := false
@@ -230,159 +240,162 @@ func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
         }
       }
       if ! gracefulExit {
-        s.Printf("copy from %v to %v failed after %d bytes with error %v",
-                 src.RemoteAddr(), dst.RemoteAddr(), n, err)
+      s.Printf("copy from %v to %v failed after %d bytes with error %v",
+           src.RemoteAddr(), dst.RemoteAddr(), n, err)
       }
     }
-	}
+  }
 
-
-	s.Printf("forwarding: %v <-> %v", c1.RemoteAddr(), c2.RemoteAddr())
-	wg.Add(2)
-	go halfJoin(c1, c2)
-	go halfJoin(c2, c1)
-	wg.Wait()
+  s.Printf("forwarding: %v <-> %v", c1.RemoteAddr(), c2.RemoteAddr())
+  wg.Add(2)
+  go halfJoin(c1, c2)
+  go halfJoin(c2, c1)
+  wg.Wait()
 }
 
 type BackendStrategy interface {
-	NextBackend() Backend
+  NextBackend() Backend
 }
 
 type RoundRobinStrategy struct {
-	backends []Backend
-	idx      int
+  backends  []Backend
+  idx       int
 }
 
 func (s *RoundRobinStrategy) NextBackend() Backend {
-	n := len(s.backends)
+  n := len(s.backends)
 
-	if n == 1 {
-		return s.backends[0]
-	} else {
-		s.idx = (s.idx + 1) % n
-		return s.backends[s.idx]
-	}
+  if n == 1 {
+    return s.backends[0]
+  } else {
+    s.idx = (s.idx + 1) % n
+    return s.backends[s.idx]
+  }
 }
 
 func parseArgs() (*Options, error) {
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s <config file>\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "%s is a simple TLS reverse proxy that can multiplex TLS connections\n"+
-			"by inspecting the SNI extension on each incoming connection. This\n"+
-			"allows you to accept connections to many different backend TLS\n"+
-			"applications on a single port.\n\n"+
-			"%s takes a single argument: the path to a YAML configuration file.\n\n", os.Args[0], os.Args[0])
-	}
-	flag.Parse()
+  flag.Usage = func() {
+    fmt.Fprintf(os.Stderr, "Usage: %s <config file>\n\n", os.Args[0])
+    fmt.Fprintf(
+      os.Stderr,
+      "%s is a simple TLS reverse proxy that can multiplex TLS connections\n"+
+      "by inspecting the SNI extension on each incoming connection. This\n"+
+      "allows you to accept connections to many different backend TLS\n"+
+      "applications on a single port.\n\n"+
+      "%s takes a single argument: the path to a YAML configuration file.\n\n",
+      os.Args[0], os.Args[0])
+  }
+  flag.Parse()
 
-	if len(flag.Args()) != 1 {
-		return nil, fmt.Errorf("You must specify a single argument, the path to the configuration file.")
-	}
+  if len(flag.Args()) != 1 {
+    return nil, fmt.Errorf(
+      "You must specify a single argument, the path to the configuration file.")
+  }
 
-	return &Options{
-		configPath: flag.Arg(0),
-	}, nil
-
+  return &Options{configPath: flag.Arg(0),}, nil
 }
 
-func parseConfig(configBuf []byte, loadTLS loadTLSConfigFn) (config *Configuration, err error) {
-	// deserialize/parse the config
-	config = new(Configuration)
-	if err = yaml.Unmarshal(configBuf, &config); err != nil {
-		err = fmt.Errorf("error parsing configuration file: %v", err)
-		return
-	}
+func parseConfig(configBuf []byte,
+                 loadTLS loadTLSConfigFn) (config *Configuration, err error) {
+  // deserialize/parse the config
+  config = new(Configuration)
+  if err = yaml.Unmarshal(configBuf, &config); err != nil {
+    err = fmt.Errorf("error parsing configuration file: %v", err)
+    return
+  }
 
-	// configuration validation / normalization
-	if config.BindAddr == "" {
-		err = fmt.Errorf("you must specify a bind_addr")
-		return
-	}
+  // configuration validation / normalization
+  if config.BindAddr == "" {
+    err = fmt.Errorf("you must specify a bind_addr")
+    return
+  }
 
-	if len(config.Frontends) == 0 {
-		err = fmt.Errorf("you must specify at least one frontend")
-		return
-	}
+  if len(config.Frontends) == 0 {
+    err = fmt.Errorf("you must specify at least one frontend")
+    return
+  }
 
-	for name, front := range config.Frontends {
-		if len(front.Backends) == 0 {
-			err = fmt.Errorf("you must specify at least one backend for frontend '%v'", name)
-			return
-		}
+  for name, front := range config.Frontends {
+    if len(front.Backends) == 0 {
+      err = fmt.Errorf(
+        "you must specify at least one backend for frontend '%v'", name)
+      return
+    }
 
-		if front.Default {
-			if config.defaultFrontend != nil {
-				err = fmt.Errorf("only one frontend may be the default")
-				return
-			}
-			config.defaultFrontend = front
-		}
+    if front.Default {
+      if config.defaultFrontend != nil {
+        err = fmt.Errorf("only one frontend may be the default")
+        return
+      }
+      config.defaultFrontend = front
+    }
 
-		for _, back := range front.Backends {
-			if back.ConnectTimeout == 0 {
-				back.ConnectTimeout = defaultConnectTimeout
-			}
+    for _, back := range front.Backends {
+      if back.ConnectTimeout == 0 {
+        back.ConnectTimeout = defaultConnectTimeout
+      }
 
-			if back.Addr == "" {
-				err = fmt.Errorf("you must specify an addr for each backend on frontend '%v'", name)
-				return
-			}
-		}
+      if back.Addr == "" {
+        err = fmt.Errorf(
+          "you must specify an addr for each backend on frontend '%v'", name)
+        return
+      }
+    }
 
-		if front.TLSCrt != "" || front.TLSKey != "" {
-			if front.tlsConfig, err = loadTLS(front.TLSCrt, front.TLSKey); err != nil {
-				err = fmt.Errorf("failed to load TLS configuration for frontend '%v': %v", name, err)
-				return
-			}
-		}
-	}
+    if front.TLSCrt != "" || front.TLSKey != "" {
+      if front.tlsConfig, err = loadTLS(front.TLSCrt, front.TLSKey);
+         err != nil {
+        err = fmt.Errorf(
+          "failed to load TLS configuration for frontend '%v': %v", name, err)
+        return
+      }
+    }
+  }
 
-	return
+  return
 }
 
 func loadTLSConfig(crtPath, keyPath string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(crtPath, keyPath)
-	if err != nil {
-		return nil, err
-	}
+  cert, err := tls.LoadX509KeyPair(crtPath, keyPath)
+  if err != nil {
+    return nil, err
+  }
 
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}, nil
+  return &tls.Config{Certificates: []tls.Certificate{cert},}, nil
 }
 
 func main() {
-	// parse command line options
-	opts, err := parseArgs()
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
+  // parse command line options
+  opts, err := parseArgs()
+  if err != nil {
+    fmt.Println(err)
+    os.Exit(1)
+  }
 
-	// read configuration file
-	configBuf, err := ioutil.ReadFile(opts.configPath)
-	if err != nil {
-		fmt.Printf("failed to read configuration file %s: %v\n", opts.configPath, err)
-		os.Exit(1)
-	}
+  // read configuration file
+  configBuf, err := ioutil.ReadFile(opts.configPath)
+  if err != nil {
+    fmt.Printf("failed to read configuration file %s: %v\n", opts.configPath, err)
+    os.Exit(1)
+  }
 
-	// parse configuration file
-	config, err := parseConfig(configBuf, loadTLSConfig)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
+  // parse configuration file
+  config, err := parseConfig(configBuf, loadTLSConfig)
+  if err != nil {
+    fmt.Println(err)
+    os.Exit(1)
+  }
 
-	// run server
-	s := &Server{
-		Configuration: config,
-		Logger:        log.New(os.Stdout, "", 0),
-	}
+  // run server
+  s := &Server{
+    Configuration:  config,
+    Logger:         log.New(os.Stdout, "", 0),
+  }
 
-	// this blocks unless there's a startup error
-	err = s.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start slt: %v\n", err)
-		os.Exit(1)
-	}
+  // this blocks unless there's a startup error
+  err = s.Run()
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "failed to start slt: %v\n", err)
+    os.Exit(1)
+  }
 }
