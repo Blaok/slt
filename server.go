@@ -169,15 +169,15 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
     backendAddr = backend.Addr[len("tls://"):]
     tlsConn, err = tls.DialWithDialer(
       &net.Dialer {
-        Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond
-      }, "tcp", backendAddr, config)
+        Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond},
+      "tcp", backendAddr, config)
     if tlsConn != nil {
       tlsState := tlsConn.ConnectionState()
       cert := tlsState.PeerCertificates[0]
       signature := base64.StdEncoding.EncodeToString(cert.Signature)
       if backend.Signature != "" {
         if backend.Signature != signature {
-          s.Errorf(
+          s.Printf(
             "mismatching signature: upstream retures `%s`, expected `%s`",
             signature, backend.Signature)
           tlsConn.Close()
