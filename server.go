@@ -47,9 +47,10 @@ type Frontend struct {
 }
 
 type Configuration struct {
-  BindAddr        string                `yaml:"bind_addr"`
-  Frontends       map[string]*Frontend  `yaml:"frontends"`
-  defaultFrontend *Frontend
+  BindAddr            string                `yaml:"bind_addr"`
+  Frontends           map[string]*Frontend  `yaml:"frontends"`
+  defaultFrontend     *Frontend
+  defaultFrontendName string
 }
 
 type Server struct {
@@ -102,7 +103,7 @@ func (s *Server) Run() error {
         }
       } else {
         if _, ok := err.(vhost.NotFound); ok && s.defaultFrontend != nil {
-          go s.proxyConnection(conn, s.defaultFrontend)
+          go s.proxyConnection(conn, s.defaultFrontendName, s.defaultFrontend)
         } else {
           s.Printf("failed to mux connection from %v, error: %v",
                    conn.RemoteAddr(), err)
@@ -144,14 +145,14 @@ func (s *Server) runFrontend(name string, front *Frontend, l net.Listener) {
       }
       return
     }
-    s.Printf("frontend connection: %v <- %v", name, conn.RemoteAddr())
 
     // proxy the connection to an backend
-    go s.proxyConnection(conn, front)
+    go s.proxyConnection(conn, name, front)
   }
 }
 
-func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
+func (s *Server) proxyConnection(
+    c net.Conn, name string, front *Frontend) (err error) {
   // unwrap if tls cert/key was specified
   if front.tlsConfig != nil {
     c = tls.Server(c, front.tlsConfig)
@@ -210,8 +211,8 @@ func (s *Server) proxyConnection(c net.Conn, front *Frontend) (err error) {
     c.Close()
     return
   }
-  s.Printf("backend connection: %v -> %v",
-           upConn.LocalAddr(), upConn.RemoteAddr())
+  s.Printf("new connection for %v: %v -> %v -> %v",
+           name, c.RemoteAddr(), upConn.LocalAddr(), upConn.RemoteAddr())
 
   // join the connections
   s.joinConnections(c, upConn)
@@ -234,8 +235,6 @@ func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
             opError = opError.Err.(*net.OpError)
           } // else case is server closed connection
           dst.Close()
-          s.Printf("connection %v -> %v closed due to %v",
-                   src.RemoteAddr(), dst.RemoteAddr(), err)
           gracefulExit = true
         }
       }
@@ -246,7 +245,6 @@ func (s *Server) joinConnections(c1 net.Conn, c2 net.Conn) {
     }
   }
 
-  s.Printf("forwarding: %v <-> %v", c1.RemoteAddr(), c2.RemoteAddr())
   wg.Add(2)
   go halfJoin(c1, c2)
   go halfJoin(c2, c1)
@@ -328,6 +326,7 @@ func parseConfig(configBuf []byte,
         return
       }
       config.defaultFrontend = front
+      config.defaultFrontendName = name
     }
 
     for _, back := range front.Backends {
