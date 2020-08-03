@@ -168,6 +168,10 @@ func (s *Server) proxyConnection(
     var tlsConn *tls.Conn
     config := &tls.Config{InsecureSkipVerify: true}
     backendAddr = backend.Addr[len("tls://"):]
+    if strings.HasPrefix(backendAddr, "tcp://") {  // raw TLS without SNI
+      config.ServerName = "0.0.0.0"
+      backendAddr = backendAddr[len("tcp://"):]
+    }
     tlsConn, err = tls.DialWithDialer(
       &net.Dialer {
         Timeout: time.Duration(backend.ConnectTimeout)*time.Millisecond},
