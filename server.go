@@ -6,7 +6,7 @@ import (
   "flag"
   "fmt"
   "github.com/go-yaml/yaml"
-  vhost "github.com/inconshreveable/go-vhost"
+  vhost "github.com/gravitational/go-vhost"
   "io"
   "io/ioutil"
   "log"
