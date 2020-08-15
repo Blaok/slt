@@ -27,6 +27,22 @@ You configure slt with a simple YAML configuration file:
             addr: "192.168.0.1:443"
 
 
+### Optional Default Frontend
+Connections that do not match other frontends will use the default frontend. Only one frontend may be the default.
+
+```yaml
+frontends:
+  v1.example.com:
+    backends:
+      -
+        addr: ":4443"
+  example.com:
+    default: true
+    backends:
+      -
+        addr: ":443"
+```
+
 ### Optional TLS Termination
 Sometimes, you don't actually want to terminate the TLS traffic, you just want to forward it elsewhere. slt only
 terminates the TLS traffic if you specify a private key and certificate file like so:
@@ -36,6 +52,26 @@ terminates the TLS traffic if you specify a private key and certificate file lik
         tls_key: /path/to/v1.example.com.key
         tls_crt: /path/to/v1.example.com.crt
 
+
+### TLS Backend with Optinal Signature Verification and SNI Removal
+
+```yaml
+    frontends:
+      v3.example.com:
+        backends:
+          -
+            addr: "tls://foo.example.com:8443"
+            signature: ""                             # signature will be printed but not verified
+          -
+            addr: "tls://foo.example.com:8443"
+            signature: "verify"                       # signature will be verified using built-in verification
+          -
+            addr: "tls://foo.example.com:8443"
+            signature: "xxx"                          # signature must match "xxx"
+          -
+            addr: "tls://tcp://bar.example.com:8443"  # connection to bar.example.com won't contain SNI
+            signature: "verify"                       # signature will be verified against "bar.example.com"
+```
 
 ### Round robin load balancing among arbitrary backends
 slt performs simple round-robin load balancing when more than one backend is available (other strategies will be available in the future):

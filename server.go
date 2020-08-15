@@ -2,6 +2,7 @@ package main
 
 import (
   "crypto/tls"
+  "crypto/x509"
   "encoding/base64"
   "flag"
   "fmt"
@@ -11,6 +12,7 @@ import (
   "io/ioutil"
   "log"
   "net"
+  "net/url"
   "os"
   "strings"
   "sync"
@@ -166,9 +168,28 @@ func (s *Server) proxyConnection(
   var backendAddr string
   if strings.HasPrefix(backend.Addr, "tls://") {
     var tlsConn *tls.Conn
-    config := &tls.Config{InsecureSkipVerify: true}
+    config := &tls.Config{InsecureSkipVerify: backend.Signature != "verify"}
     backendAddr = backend.Addr[len("tls://"):]
     if strings.HasPrefix(backendAddr, "tcp://") {  // raw TLS without SNI
+      if backend.Signature == "verify" {
+        // verify the connection manually (this requires Go 1.15+)
+        config.InsecureSkipVerify = true
+        u, err := url.Parse(backendAddr)
+        if err != nil {
+          return err
+        }
+        config.VerifyConnection = func(cs tls.ConnectionState) error {
+          opts := x509.VerifyOptions{
+            DNSName:       u.Hostname(),
+            Intermediates: x509.NewCertPool(),
+          }
+          for _, cert := range cs.PeerCertificates[1:] {
+            opts.Intermediates.AddCert(cert)
+          }
+          _, err := cs.PeerCertificates[0].Verify(opts)
+          return err
+        }
+      }
       config.ServerName = "0.0.0.0"
       backendAddr = backendAddr[len("tcp://"):]
     }
@@ -180,19 +201,20 @@ func (s *Server) proxyConnection(
       tlsState := tlsConn.ConnectionState()
       cert := tlsState.PeerCertificates[0]
       signature := base64.StdEncoding.EncodeToString(cert.Signature)
-      if backend.Signature != "" {
-        if backend.Signature != signature {
-          s.Printf(
-            "mismatching signature: upstream retures `%s`, expected `%s`",
-            signature, backend.Signature)
-          tlsConn.Close()
-          c.Close()
-          return
-        } else {
-          s.Printf("upstream signature matches expection")
-        }
-      } else {
+      switch backend.Signature {
+      case "":
         s.Printf("upstream signature: `%s`", signature)
+      case "verify":
+        s.Printf("upstream signature verified")
+      case signature:
+        s.Printf("upstream signature matches expection")
+      default:
+        s.Printf(
+          "mismatching signature: upstream retures `%s`, expected `%s`",
+          signature, backend.Signature)
+        tlsConn.Close()
+        c.Close()
+        return
       }
       upConn = tlsConn
     } else {
